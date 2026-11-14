@@ -14,7 +14,7 @@ from astropy.coordinates import SkyCoord
 
 from astroquery.ipac.irsa import Irsa
 
-from firefly_client import FireflyClient
+#from firefly_client import FireflyClient
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -31,12 +31,34 @@ conf.remote_timeout = 120
 # search_radius = 1 * u.arcsec
 # results = Irsa.query_sia(pos=(coord, search_radius), collection=['spherex_dr1', 'spherex_qr3'])
 
-with fits.open('test.fits') as h:
-    data = h[1].data
 
-plt.imshow(data)
-plt.show()
+ra_deg = 304.693508808
+dec_deg = 42.4436872991
 
+coord = SkyCoord(ra_deg, dec_deg, unit="deg")
+search_radius = 1 * u.arcsec
+
+# search for all images covering this location
+results = Irsa.query_sia(
+    pos=(coord, search_radius),
+    collection=["spherex_dr1", "spherex_qr3"],
+)
+
+print("number of found images", len(results))
+
+if len(results) == 0:
+    print("nothing found at this location")
+else:
+    # fetch the url
+    url = results["access_url"][0]
+    print("reading:", url)
+
+    # fetch FITS from website
+    with fits.open(url) as h:
+        data = h[1].data.copy()
+
+    plt.imsave("test.png", data, cmap="gray")
+    print("saved test.png")
 # app = Flask(__name__)
 
 # @app.get('/')
