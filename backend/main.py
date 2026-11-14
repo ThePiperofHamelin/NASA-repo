@@ -12,11 +12,12 @@ from astropy.table import Table
 # astropy's default timeout limit. Increase it.
 from astropy.utils.data import conf
 from astropy.wcs import WCS
-from astroquery.ipac.irsa import Irsa
 from firefly_client import FireflyClient
 from flask import Flask, abort, request, send_file
 from PIL import Image
+import io
 import os
+import re
 
 import grid
 import irsa
@@ -30,34 +31,33 @@ data_dir = os.path.join(cur_dir, "data");
 os.chdir(cur_dir);
 os.makedirs(data_dir, exist_ok=True);
 
-def _fetch_image(x: float, y: float, r: float, bandpass: str):
-	query = f"""
-SELECT
-	'https://irsa.ipac.caltech.edu/' || a.uri || '?center={x},{y}d&size={r}' AS uri,
-	p.time_bounds_lower
-FROM spherex.artifact a
-JOIN spherex.plane p ON a.planeid = p.planeid
-WHERE 1 = CONTAINS(POINT('ICRS', {x}, {y}), p.poly)
-		AND p.energy_bandpassname = '{bandpass}'
-ORDER BY p.time_bounds_lower
-""";
-
-	return Irsa.query_tap(query, async_job=True, maxrec=1)[0];
+def _fetch_image(x: float, y: float, r: float, bandpass: str, start=None, end=None):
+	url = irsa.cutout_url(x, y, r, bandpass, start=start, end=end)
+	if url is None:
+		abort(404)
+	return url
 
 
-def load_pic(x: float, y: float, r: float, bandpass: str):
-	img_path = f"{data_dir}/${bandpass}/img/{x}.{y}.{r}.png";
+def load_pic(x: float, y: float, r: float, bandpass: str, start=None, end=None):
+	name = f"{x}.{y}.{r}"
+	if start is not None or end is not None:
+		name = f"{name}.{start}.{end}"
+	img_path = os.path.join(data_dir, re.sub(r"[^A-Za-z0-9_.-]", "_", bandpass), "img", f"{name}.png")
 
 	if os.path.exists(img_path):
 		with open(img_path, "rb") as f:
 			return f.read()
 
-	url = _fetch_image(x, y, r, bandpass)["access_url"][0];
+	url = _fetch_image(x, y, r, bandpass, start=start, end=end)
 	with urlopen(url) as res:
 		data = res.read();
 
-	img = Image.fromarray(data)
-	img = img.convert("L")
+	with fits.open(io.BytesIO(data)) as h:
+		image = h["IMAGE"].data.astype(np.float32) - h["ZODI"].data.astype(np.float32)
+	low, high = np.nanpercentile(image, [1, 99])
+	scaled = np.clip((image - low) / max(high - low, 1e-6), 0, 1)
+	img = Image.fromarray((scaled * 255).astype(np.uint8), "L")
+	os.makedirs(os.path.dirname(img_path), exist_ok=True)
 	img.save(img_path, format="PNG")
 
 	with open(img_path, "rb") as f:
@@ -73,6 +73,12 @@ def soft_cast(T, x, fallback):
 	except:
 		return fallback
 
+
+def list_arg(name):
+	values = [v for raw in request.args.getlist(name) for v in raw.split(",") if v]
+	return values or None
+
+
 @app.get('/api/getPic')
 def get_pic():
 	# Fix 500 error
@@ -80,8 +86,13 @@ def get_pic():
 	y = soft_cast(float, request.args.get('dec'), 0)
 	r = soft_cast(float, request.args.get("radius"), 0.1);
 	band = soft_cast(str, request.args.get("band"), "SPHEREx-D2")
+	start = soft_cast(float, request.args.get("start"), None)
+	end = soft_cast(float, request.args.get("end"), None)
 
-	return load_pic(x, y, r, band), 200, { "Content-Type": "image/png" };
+	try:
+		return load_pic(x, y, r, band, start=start, end=end), 200, { "Content-Type": "image/png" };
+	except ValueError as e:
+		return {"error": str(e)}, 400
 
 @app.after_request
 def allow_cors(response):
@@ -106,7 +117,20 @@ def get_cells():
 @app.get('/api/cells/<cell_id>/exposures')
 def get_exposures(cell_id):
 	cell = cell_or_404(cell_id)
-	exposures = irsa.search(*cell.center, cell.id)
+	start = soft_cast(float, request.args.get('start'), None)
+	end = soft_cast(float, request.args.get('end'), None)
+	try:
+		exposures = irsa.search(
+			*cell.center,
+			cell.id,
+			start=start,
+			end=end,
+			bands=list_arg('band'),
+			collections=list_arg('collection'),
+			obs_id=request.args.get('obs_id') or None,
+		)
+	except ValueError as e:
+		return {"error": str(e)}, 400
 	return {"exposures": [
 		{"id": e["id"], "mjd": e["mjd"], "ready": os.path.exists(render.tile_path(cell, e["id"]))}
 		for e in exposures

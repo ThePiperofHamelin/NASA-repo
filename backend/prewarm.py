@@ -12,12 +12,18 @@ def main():
 	parser.add_argument("--ra", type=float, default=304.693508808)
 	parser.add_argument("--dec", type=float, default=42.4436872991)
 	parser.add_argument("--fov", type=float, default=2.0)
+	parser.add_argument("--start", type=float, help="earliest observation MJD")
+	parser.add_argument("--end", type=float, help="latest observation MJD")
+	parser.add_argument("--band", action="append", help="bandpass to include (repeatable)")
 	args = parser.parse_args()
 
 	cells = grid.cells_in_view(args.ra, args.dec, min(args.fov, 2.0))
 	print(f"{len(cells)} cells")
 	with ThreadPoolExecutor(irsa.MAX_SEARCHES) as pool:
-		exposures = dict(zip(cells, pool.map(lambda c: irsa.search(*c.center, c.id), cells)))
+		exposures = dict(zip(cells, pool.map(
+			lambda c: irsa.search(*c.center, c.id, start=args.start, end=args.end, bands=args.band),
+			cells,
+		)))
 
 	jobs = {(cell, es[-1]["id"]): (cell, es[-1]) for cell, es in exposures.items() if es}
 	print(f"{len(jobs)} tiles")
