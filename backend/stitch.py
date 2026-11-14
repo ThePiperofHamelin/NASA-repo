@@ -4,11 +4,8 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from PIL import Image
-from reproject import reproject_interp
-from reproject.mosaicking import (
-    find_optimal_celestial_wcs,
-    reproject_and_coadd,
-)
+
+from reprojection import find_optimal_celestial_wcs, reproject_and_coadd
 
 
 def stitch_images(fits_paths, output_path, hdu_index=1):
@@ -64,9 +61,7 @@ def stitch_images(fits_paths, output_path, hdu_index=1):
         images,
         output_wcs,
         shape_out=output_shape,
-        reproject_function=reproject_interp,
         combine_function="mean",
-        match_background=False,
     )
 
     # 4. Identify finite pixels with observation coverage.

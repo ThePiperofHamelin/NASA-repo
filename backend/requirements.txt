@@ -7,4 +7,3 @@ astropy
 astroquery
 firefly_client
 certifi
-reproject

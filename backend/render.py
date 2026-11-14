@@ -6,10 +6,10 @@ from scipy.ndimage import binary_dilation, gaussian_filter, median_filter
 from astropy.visualization import make_lupton_rgb
 from astropy.wcs import WCS
 from PIL import Image
-from reproject import reproject_interp
 
 import irsa
 from grid import CELL_DEG, Cell
+from reprojection import reproject_interp
 
 STRETCH = float(os.getenv("RGB_STRETCH", "1.5"))
 Q = float(os.getenv("RGB_Q", "8"))
