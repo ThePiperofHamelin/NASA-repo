@@ -1,9 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import ssl
-import certifi
-import shutil
-import urllib.request
+
+from urllib.request import urlopen;
+
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -17,86 +16,72 @@ from astroquery.ipac.irsa import Irsa
 from firefly_client import FireflyClient
 from flask import Flask, request, send_file
 from PIL import Image
-import tempfile
-import urllib
 import os
 
 conf.remote_timeout = 120
+app = Flask(__name__);
+cur_dir = os.path.dirname(__file__);
+data_dir = os.path.join(cur_dir, "data");
 
-app = Flask(__name__)
+os.chdir(cur_dir);
+os.mkdir(data_dir, 0o600);
 
-if os.getenv('TMPDIR') != None:
-	tmpdir = os.getenv('TMPDIR')
-else:
-	tmpdir = tempfile.mkdtemp()
+def _fetch_image(x: float, y: float, r: float, bandpass: str):
+	query = f"""
+SELECT
+	'https://irsa.ipac.caltech.edu/' || a.uri || '?center={x},{y}d&size={r}' AS uri,
+	p.time_bounds_lower
+FROM spherex.artifact a
+JOIN spherex.plane p ON a.planeid = p.planeid
+WHERE 1 = CONTAINS(POINT('ICRS', {x}, {y}), p.poly)
+		AND p.energy_bandpassname = '{bandpass}'
+ORDER BY p.time_bounds_lower
+""";
 
-def get_fits_url(ra_deg, dec_deg):
-	coord = SkyCoord(ra_deg, dec_deg, unit='deg')
-	search_radius = 1 * u.arcsec
-	results = Irsa.query_sia(pos=(coord, search_radius), collection=['spherex_dr1', 'spherex_qr3'])
-	return results['access_url'][0]
+	return Irsa.query_tap(query, async_job=True, maxrec=1)[0];
 
-def coord_to_path(ra_deg, dec_deg):
-	return f"{ra_deg}-{dec_deg}".replace('.', '-')
 
-def load_pic(ra: float, dec: float, n: int):
-    url = get_fits_url(ra, dec)
-    coord = coord_to_path(ra, dec)
-    img_path = f"{tmpdir}/img/{coord}.png"
+def load_pic(x: float, y: float, r: float, bandpass: str):
+	img_path = f"{data_dir}/${bandpass}/img/{x}.{y}.{r}.png";
 
-    if os.path.exists(img_path):
-        with open(img_path, "rb") as f:
-            return f.read()
+	if os.path.exists(img_path):
+		with open(img_path, "rb") as f:
+			return f.read()
 
-    fits_path = f"{tmpdir}/fits/{coord}.fits"
+	url = _fetch_image(x, y, r, bandpass)["access_url"][0];
+	with urlopen(url) as res:
+		data = res.read();
 
-    if not os.path.exists(fits_path):
-        # download FITS using certifi
-        context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(
-            url, context=context, timeout=120
-        ) as response:
-            with open(fits_path, "wb") as output:
-                shutil.copyfileobj(response, output)
+	img = Image.fromarray(data)
+	img = img.convert("L")
+	img.save(img_path, format="PNG")
 
-    with fits.open(fits_path) as h:
-        data = h[n].data
-
-    img = Image.fromarray(data)
-    img = img.convert("L")
-    img.save(img_path, format="PNG")
-
-    with open(img_path, "rb") as f:
-        return f.read()
+	with open(img_path, "rb") as f:
+		return f.read();
 
 
 def soft_cast(T, x, fallback):
-    try:
-        if x is None:
-            return fallback
-        else:
-            return T(x)
-    except:
-        return fallback
+	try:
+		if x is None:
+			return fallback
+		else:
+			return T(x)
+	except:
+		return fallback
 
 @app.get('/api/getPic')
 def get_pic():
 	# Fix 500 error
-	n = soft_cast(int, request.args.get("n"), 0)
-	ra = soft_cast(float, request.args.get('ra'), 0)
-	dec = soft_cast(float, request.args.get('dec'), 0)
+	x = soft_cast(float, request.args.get('ra'), 0)
+	y = soft_cast(float, request.args.get('dec'), 0)
+	r = soft_cast(float, request.args.get("radius"), 0.1);
+	band = soft_cast(str, request.args.get("band"), "SPHEREx-D2")
 
-	return load_pic(ra, dec, n), 200, { "Content-Type": "image/png" }
+	return load_pic(x, y, r, band), 200, { "Content-Type": "image/png" };
 
 @app.get('/')
 def hello_world():
 	return 'hello world'
 
 if __name__ == '__main__':
-	print(f"tmp directory is {tmpdir}")
-	if not os.path.exists(f"{tmpdir}/fits"):
-		os.mkdir(f"{tmpdir}/fits")
-	if not os.path.exists(f"{tmpdir}/img"):
-		os.mkdir(f"{tmpdir}/img")
-
 	app.run(port=8000)
