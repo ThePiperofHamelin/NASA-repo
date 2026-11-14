@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 export default function Home() {
   return (
     <>
-      <Card className="absolute m-2 bg-gray-800/50" size="sm">
+      <Card className="absolute m-2 bg-white" size="sm">
         <CardHeader>
           <CardTitle>Settings</CardTitle>
         </CardHeader>
