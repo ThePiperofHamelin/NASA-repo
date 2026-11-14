@@ -1,102 +1,64 @@
-import matplotlib.pyplot as plt
-import numpy as np
-import ssl
-import certifi
-import shutil
-import urllib.request
-from astropy import units as u
-from astropy.coordinates import SkyCoord
-from astropy.io import fits
-from astropy.table import Table
-
-# The time it takes to read SPHEREx files can exceed
-# astropy's default timeout limit. Increase it.
-from astropy.utils.data import conf
-from astropy.wcs import WCS
-from astroquery.ipac.irsa import Irsa
-from firefly_client import FireflyClient
-from flask import Flask, request, send_file
-from PIL import Image
-import tempfile
-import urllib
 import os
 
-conf.remote_timeout = 120
+from flask import Flask, abort, request, send_file
+
+import grid
+import irsa
+import render
 
 app = Flask(__name__)
 
-if os.getenv('TMPDIR') != None:
-	tmpdir = os.getenv('TMPDIR')
-else:
-	tmpdir = tempfile.mkdtemp()
-
-def get_fits_url(ra_deg, dec_deg):
-	coord = SkyCoord(ra_deg, dec_deg, unit='deg')
-	search_radius = 1 * u.arcsec
-	results = Irsa.query_sia(pos=(coord, search_radius), collection=['spherex_dr1', 'spherex_qr3'])
-	return results['access_url'][0]
-
-def coord_to_path(ra_deg, dec_deg):
-	return f"{ra_deg}-{dec_deg}".replace('.', '-')
-
-def load_pic(ra: float, dec: float, n: int):
-    url = get_fits_url(ra, dec)
-    coord = coord_to_path(ra, dec)
-    img_path = f"{tmpdir}/img/{coord}.png"
-
-    if os.path.exists(img_path):
-        with open(img_path, "rb") as f:
-            return f.read()
-
-    fits_path = f"{tmpdir}/fits/{coord}.fits"
-
-    if not os.path.exists(fits_path):
-        # download FITS using certifi
-        context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(
-            url, context=context, timeout=120
-        ) as response:
-            with open(fits_path, "wb") as output:
-                shutil.copyfileobj(response, output)
-
-    with fits.open(fits_path) as h:
-        data = h[n].data
-
-    img = Image.fromarray(data)
-    img = img.convert("L")
-    img.save(img_path, format="PNG")
-
-    with open(img_path, "rb") as f:
-        return f.read()
-
 
 def soft_cast(T, x, fallback):
-    try:
-        if x is None:
-            return fallback
-        else:
-            return T(x)
-    except:
-        return fallback
+	try:
+		return fallback if x is None else T(x)
+	except (TypeError, ValueError):
+		return fallback
 
-@app.get('/api/getPic')
-def get_pic():
-	# Fix 500 error
-	n = soft_cast(int, request.args.get("n"), 0)
-	ra = soft_cast(float, request.args.get('ra'), 0)
-	dec = soft_cast(float, request.args.get('dec'), 0)
 
-	return load_pic(ra, dec, n), 200, { "Content-Type": "image/png" }
+def cell_or_404(cell_id):
+	try:
+		return grid.parse_cell(cell_id)
+	except ValueError:
+		abort(404)
 
-@app.get('/')
-def hello_world():
-	return 'hello world'
+
+@app.after_request
+def allow_cors(response):
+	response.headers["Access-Control-Allow-Origin"] = "*"
+	return response
+
+
+@app.get('/api/cells')
+def get_cells():
+	ra = soft_cast(float, request.args.get('ra'), None)
+	dec = soft_cast(float, request.args.get('dec'), None)
+	fov = min(soft_cast(float, request.args.get('fov'), 2.0), 2.0)
+	if ra is None or dec is None:
+		return {"error": "ra and dec are required"}, 400
+	return {"cells": [{"id": c.id, "wcs": c.wcs_header(), "corners": c.corners} for c in grid.cells_in_view(ra, dec, fov)]}
+
+
+@app.get('/api/cells/<cell_id>/exposures')
+def get_exposures(cell_id):
+	cell = cell_or_404(cell_id)
+	exposures = irsa.search(*cell.center, cell.id)
+	return {"exposures": [
+		{"id": e["id"], "mjd": e["mjd"], "ready": os.path.exists(render.tile_path(cell, e["id"]))}
+		for e in exposures
+	]}
+
+
+@app.get('/api/cells/<cell_id>/tiles/<exposure_id>.png')
+def get_tile(cell_id, exposure_id):
+	cell = cell_or_404(cell_id)
+	exposure = next((e for e in irsa.search(*cell.center, cell.id) if e["id"] == exposure_id), None)
+	if exposure is None:
+		abort(404)
+	response = send_file(render.render_tile(cell, exposure), mimetype="image/png")
+	response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+	return response
+
 
 if __name__ == '__main__':
-	print(f"tmp directory is {tmpdir}")
-	if not os.path.exists(f"{tmpdir}/fits"):
-		os.mkdir(f"{tmpdir}/fits")
-	if not os.path.exists(f"{tmpdir}/img"):
-		os.mkdir(f"{tmpdir}/img")
-
-	app.run(port=8000)
+	app.run(port=int(os.getenv("PORT", "8000")), threaded=True)
