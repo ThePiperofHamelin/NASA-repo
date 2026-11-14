@@ -1,4 +1,5 @@
 'use client';
+import Img from '@/components/Img';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -9,6 +10,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { useEffect, useState } from 'react';
+import { ModeToggle } from '../components/mode-toggle';
 
 export default function Home() {
   const [imgUrl, setImgUrl] = useState(
@@ -20,13 +22,16 @@ export default function Home() {
 
   return (
     <>
-      <Card className="absolute m-2 bg-white" size="sm">
+      <div className="absolute m-2 right-0">
+        <ModeToggle />
+      </div>
+      <Card className="absolute m-2 bg-background" size="sm">
         <CardHeader>
           <CardTitle>Settings</CardTitle>
         </CardHeader>
-        <CardContent className="flex gap-2">
+        <CardContent className="flex flex-col gap-2">
           <Input
-            placeholder="Enter RA"
+            placeholder="Enter Right Ascension"
             value={ra}
             onChange={(e) => setRa(Number(e.target.value))}
           />
@@ -54,10 +59,7 @@ export default function Home() {
           </Button>
         </CardFooter>
       </Card>
-      <img
-        className="mx-auto my-auto w-[50%] border-white border-2"
-        src={imgUrl}
-      />
+      <Img src={imgUrl} />
     </>
   );
 }
