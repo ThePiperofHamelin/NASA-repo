@@ -50,13 +50,14 @@ def load_pic(ra: float, dec: float, n: int):
 
     fits_path = f"{tmpdir}/fits/{coord}.fits"
 
-    # 使用 certifi 证书库下载 FITS
-    context = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(
-        url, context=context, timeout=120
-    ) as response:
-        with open(fits_path, "wb") as output:
-            shutil.copyfileobj(response, output)
+    if not os.path.exists(fits_path):
+        # download FITS using certifi
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(
+            url, context=context, timeout=120
+        ) as response:
+            with open(fits_path, "wb") as output:
+                shutil.copyfileobj(response, output)
 
     with fits.open(fits_path) as h:
         data = h[n].data
@@ -81,18 +82,12 @@ def soft_cast(T, x, fallback):
 @app.get('/api/getPic')
 def get_pic():
 	# Fix 500 error
-	n = soft_cast(int, request.args.get("n"));
-	ra = soft_cast(float, request.args.get('ra'));
-	dec = soft_cast(float, request.args.get('dec'));
+	n = soft_cast(int, request.args.get("n"), 0)
+	ra = soft_cast(float, request.args.get('ra'), 0)
+	dec = soft_cast(float, request.args.get('dec'), 0)
 
-<<<<<<< HEAD
-	return load_pic(ra, dec, n), 200, { "Content-Type": "image/png" };
-=======
-    if not os.path.exists(img_path):
-        load_pic(ra, dec)
->>>>>>> cd11fad (fixed unicode decode error)
+	return load_pic(ra, dec, n), 200, { "Content-Type": "image/png" }
 
-    return send_file(img_path, mimetype='image/png')
 @app.get('/')
 def hello_world():
 	return 'hello world'
