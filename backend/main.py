@@ -68,7 +68,7 @@ def soft_cast(T, x, fallback):
 @app.get('/api/getPic')
 def get_pic():
 	# Fix 500 error
-	n = soft_cast(float, request.args.get("n"));
+	n = soft_cast(int, request.args.get("n"));
 	ra = soft_cast(float, request.args.get('ra'));
 	dec = soft_cast(float, request.args.get('dec'));
 
