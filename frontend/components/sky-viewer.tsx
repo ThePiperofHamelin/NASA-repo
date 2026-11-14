@@ -17,6 +17,11 @@ type AladinModule = typeof import('aladin-lite').default;
 type Props = {
   target: { ra: number; dec: number; key: number };
   onLoadingChange: (count: number) => void;
+  onMetadataChange?: (metadata: {
+    ra: number;
+    dec: number;
+    observationMjd: number | null;
+  }) => void;
 };
 
 const FADE_MS = 300;
@@ -35,14 +40,27 @@ async function fetchBlob(url: string, signal: AbortSignal) {
   }
 }
 
-export function SkyViewer({ target, onLoadingChange }: Props) {
+
+export function SkyViewer({
+  target,
+  onLoadingChange,
+  onMetadataChange,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engine = useRef<ReturnType<typeof createEngine> | null>(null);
-  const callbacks = useRef({ onLoadingChange });
+  
+const callbacks = useRef({
+  onLoadingChange,
+  onMetadataChange,
+});
 
-  useEffect(() => {
-    callbacks.current = { onLoadingChange };
-  });
+  
+useEffect(() => {
+  callbacks.current = {
+    onLoadingChange,
+    onMetadataChange,
+  };
+});
 
   useEffect(() => {
     let disposed = false;
@@ -69,10 +87,16 @@ export function SkyViewer({ target, onLoadingChange }: Props) {
   );
 }
 
+
 function createEngine(
   A: AladinModule,
   container: HTMLElement,
-  callbacks: { current: Pick<Props, 'onLoadingChange'> }
+  callbacks: {
+    current: Pick<
+      Props,
+      'onLoadingChange' | 'onMetadataChange'
+    >;
+  }
 ) {
   const aladin: Aladin = A.aladin(container, {
     target: `${DEFAULT_TARGET.ra} ${DEFAULT_TARGET.dec}`,
@@ -102,6 +126,40 @@ function createEngine(
   const active = new Map<string, { exposureId: string; controller: AbortController }>();
   let viewAbort: AbortController | null = null;
   let viewTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const publishMetadata = (includeExposure = true) => {
+    const [ra, dec] = aladin.getRaDec();
+
+    let observationMjd: number | null = null;
+    let closestDistance = Infinity;
+
+    if (includeExposure) {
+      for (const cell of cells) {
+        const exposure = exposures.get(cell.id)?.at(-1);
+
+        if (!exposure) continue;
+
+        const deltaRa =
+          (((Number(cell.wcs.CRVAL1) - ra + 540) % 360) - 180) *
+          Math.cos((dec * Math.PI) / 180);
+
+        const deltaDec = Number(cell.wcs.CRVAL2) - dec;
+
+        const distance = Math.hypot(deltaRa, deltaDec);
+
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          observationMjd = exposure.mjd;
+        }
+      }
+    }
+
+    callbacks.current.onMetadataChange?.({
+      ra,
+      dec,
+      observationMjd,
+    });
+  };
 
   const drawOutlines = () => {
     outlines.removeAll();
@@ -205,6 +263,7 @@ function createEngine(
     const request = fetchExposures(cell.id)
       .then((list) => {
         exposures.set(cell.id, list);
+        publishMetadata();
         sync();
       })
       .catch((err) => console.warn(`exposures ${cell.id} failed`, err))
@@ -218,6 +277,7 @@ function createEngine(
     viewAbort = controller;
     const [ra, dec] = aladin.getRaDec();
     const [fov] = aladin.getFov();
+    publishMetadata(false);
     try {
       cells = await fetchCells(ra, dec, Math.min(fov, MAX_FOV), controller.signal);
     } catch (err) {
@@ -226,6 +286,7 @@ function createEngine(
     }
     cells.forEach(requestExposures);
     sync();
+    publishMetadata();
   };
 
   const scheduleView = () => {
