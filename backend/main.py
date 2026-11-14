@@ -1,5 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import ssl
+import certifi
+import shutil
+import urllib.request
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -11,7 +15,7 @@ from astropy.utils.data import conf
 from astropy.wcs import WCS
 from astroquery.ipac.irsa import Irsa
 from firefly_client import FireflyClient
-from flask import Flask, request
+from flask import Flask, request, send_file
 from PIL import Image
 import tempfile
 import urllib
@@ -36,34 +40,43 @@ def coord_to_path(ra_deg, dec_deg):
 	return f"{ra_deg}-{dec_deg}".replace('.', '-')
 
 def load_pic(ra: float, dec: float, n: int):
-	url = get_fits_url(ra, dec)
-	coord = coord_to_path(ra, dec);
-	img_path = f"{tmpdir}/img/{coord}.png";
+    url = get_fits_url(ra, dec)
+    coord = coord_to_path(ra, dec)
+    img_path = f"{tmpdir}/img/{coord}.png"
 
-	if os.path.exists(img_path):
-		with open(img_path, "rb") as f:
-			return f.read();
+    if os.path.exists(img_path):
+        with open(img_path, "rb") as f:
+            return f.read()
 
+    fits_path = f"{tmpdir}/fits/{coord}.fits"
 
-	fits_path = f"{tmpdir}/fits/{coord}.fits"
-	urllib.request.urlretrieve(url, fits_path)
+    # 使用 certifi 证书库下载 FITS
+    context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(
+        url, context=context, timeout=120
+    ) as response:
+        with open(fits_path, "wb") as output:
+            shutil.copyfileobj(response, output)
 
-	with fits.open(fits_path) as h:
-		data = h[n].data
+    with fits.open(fits_path) as h:
+        data = h[n].data
 
-	img = Image.fromarray(data)
-	img = img.convert('L')
-	img.save(img_path, format="PNG");
+    img = Image.fromarray(data)
+    img = img.convert("L")
+    img.save(img_path, format="PNG")
 
-	with open(img_path, "rb") as f:
-		return f.read();
+    with open(img_path, "rb") as f:
+        return f.read()
+
 
 def soft_cast(T, x, fallback):
-	try:
-		if x == None: return fallback;
-		else: return T(x);
-	except:
-		return fallback;
+    try:
+        if x is None:
+            return fallback
+        else:
+            return T(x)
+    except:
+        return fallback
 
 @app.get('/api/getPic')
 def get_pic():
@@ -72,8 +85,14 @@ def get_pic():
 	ra = soft_cast(float, request.args.get('ra'));
 	dec = soft_cast(float, request.args.get('dec'));
 
+<<<<<<< HEAD
 	return load_pic(ra, dec, n), 200, { "Content-Type": "image/png" };
+=======
+    if not os.path.exists(img_path):
+        load_pic(ra, dec)
+>>>>>>> cd11fad (fixed unicode decode error)
 
+    return send_file(img_path, mimetype='image/png')
 @app.get('/')
 def hello_world():
 	return 'hello world'
