@@ -14,9 +14,13 @@ from astropy.utils.data import conf
 from astropy.wcs import WCS
 from astroquery.ipac.irsa import Irsa
 from firefly_client import FireflyClient
-from flask import Flask, request, send_file
+from flask import Flask, abort, request, send_file
 from PIL import Image
 import os
+
+import grid
+import irsa
+import render
 
 conf.remote_timeout = 120
 app = Flask(__name__);
@@ -24,7 +28,7 @@ cur_dir = os.path.dirname(__file__);
 data_dir = os.path.join(cur_dir, "data");
 
 os.chdir(cur_dir);
-os.mkdir(data_dir, 0o600);
+os.makedirs(data_dir, exist_ok=True);
 
 def _fetch_image(x: float, y: float, r: float, bandpass: str):
 	query = f"""
@@ -78,6 +82,45 @@ def get_pic():
 	band = soft_cast(str, request.args.get("band"), "SPHEREx-D2")
 
 	return load_pic(x, y, r, band), 200, { "Content-Type": "image/png" };
+
+@app.after_request
+def allow_cors(response):
+	response.headers["Access-Control-Allow-Origin"] = "*"
+	return response
+
+def cell_or_404(cell_id):
+	try:
+		return grid.parse_cell(cell_id)
+	except ValueError:
+		abort(404)
+
+@app.get('/api/cells')
+def get_cells():
+	ra = soft_cast(float, request.args.get('ra'), None)
+	dec = soft_cast(float, request.args.get('dec'), None)
+	fov = min(soft_cast(float, request.args.get('fov'), 2.0), 2.0)
+	if ra is None or dec is None:
+		return {"error": "ra and dec are required"}, 400
+	return {"cells": [{"id": c.id, "wcs": c.wcs_header(), "corners": c.corners} for c in grid.cells_in_view(ra, dec, fov)]}
+
+@app.get('/api/cells/<cell_id>/exposures')
+def get_exposures(cell_id):
+	cell = cell_or_404(cell_id)
+	exposures = irsa.search(*cell.center, cell.id)
+	return {"exposures": [
+		{"id": e["id"], "mjd": e["mjd"], "ready": os.path.exists(render.tile_path(cell, e["id"]))}
+		for e in exposures
+	]}
+
+@app.get('/api/cells/<cell_id>/tiles/<exposure_id>.png')
+def get_tile(cell_id, exposure_id):
+	cell = cell_or_404(cell_id)
+	exposure = next((e for e in irsa.search(*cell.center, cell.id) if e["id"] == exposure_id), None)
+	if exposure is None:
+		abort(404)
+	response = send_file(render.render_tile(cell, exposure), mimetype="image/png")
+	response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+	return response
 
 @app.get('/')
 def hello_world():
