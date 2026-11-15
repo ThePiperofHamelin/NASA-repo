@@ -1,6 +1,23 @@
 export const DEFAULT_TARGET = { ra: 304.693508808, dec: 42.4436872991 };
 export const MAX_FOV = 2;
 
+export type RGBSettings = {
+  r_weight: number;
+  g_weight: number;
+  b_weight: number;
+  brightness: number;
+};
+
+export const DEFAULT_RGB: RGBSettings = {
+  r_weight: 1,
+  g_weight: 1,
+  b_weight: 1,
+  brightness: 1,
+};
+
+export const rgbKey = (rgb: RGBSettings) =>
+  [rgb.r_weight, rgb.g_weight, rgb.b_weight, rgb.brightness].join(',');
+
 const MJD_EPOCH = 40587;
 
 export type Wcs = Record<string, string | number>;
@@ -49,15 +66,17 @@ export const BAND_OPTIONS = [
   },
 ] as const;
 
-export const dateToMjd = (date: Date) => date.getTime() / 86400000 + MJD_EPOCH;
+export const dateToMjd = (date: Date) =>
+  date.getTime() / 86400000 + MJD_EPOCH;
 
-export const mjdToDate = (mjd: number) => new Date((mjd - MJD_EPOCH) * 86400000);
+export const mjdToDate = (mjd: number) =>
+  new Date((mjd - MJD_EPOCH) * 86400000);
 
-/** Format an MJD as a value accepted by `<input type="datetime-local">`. */
+/** Format an MJD as a value accepted by datetime-local. */
 export const mjdToInputValue = (mjd: number) =>
   mjdToDate(mjd).toISOString().slice(0, 16);
 
-/** Parse a `datetime-local` value as UTC and return its MJD. */
+/** Parse a datetime-local value as UTC and return its MJD. */
 export const inputValueToMjd = (value: string): number | null => {
   if (!value) return null;
   const date = new Date(value.endsWith('Z') ? value : `${value}Z`);
@@ -72,8 +91,16 @@ const filtersToParams = (filters: ObservationFilters) => {
   return params;
 };
 
-export async function fetchCells(ra: number, dec: number, fov: number, signal?: AbortSignal) {
-  const res = await fetch(`/api/cells?ra=${ra}&dec=${dec}&fov=${fov}`, { signal });
+export async function fetchCells(
+  ra: number,
+  dec: number,
+  fov: number,
+  signal?: AbortSignal,
+) {
+  const res = await fetch(
+    `/api/cells?ra=${ra}&dec=${dec}&fov=${fov}`,
+    { signal },
+  );
   if (!res.ok) throw new Error(`cells ${res.status}`);
   return ((await res.json()) as { cells: Cell[] }).cells;
 }
@@ -96,9 +123,20 @@ export const tileUrl = (
   cellId: string,
   exposureId: string,
   filters: ObservationFilters = DEFAULT_FILTERS,
+  rgb: RGBSettings = DEFAULT_RGB,
 ) => {
   const params = new URLSearchParams();
-  if (filters.bands?.length) params.set('band', filters.bands.join(','));
+
+  if (filters.bands?.length) {
+    params.set('band', filters.bands.join(','));
+  }
+
+  params.set('r_weight', String(rgb.r_weight));
+  params.set('g_weight', String(rgb.g_weight));
+  params.set('b_weight', String(rgb.b_weight));
+  params.set('brightness', String(rgb.brightness));
+  params.set('render_version', 'rgb-v2');
+
   const query = params.toString();
   return `/api/cells/${cellId}/tiles/${exposureId}.png${query ? `?${query}` : ''}`;
 };

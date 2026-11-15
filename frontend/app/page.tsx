@@ -8,8 +8,12 @@ import { SkyViewer } from '@/components/sky-viewer';
 import { MetadataPanel } from '@/components/metadata-panel';
 import { DiscoveryTools } from '@/components/discovery-tools';
 import { ObservationFilters } from '@/components/observation-filters';
+import { RGBControls } from '@/components/rgb-controls';
+
 import {
   DEFAULT_FILTERS,
+  DEFAULT_RGB,
+  type RGBSettings,
   DEFAULT_TARGET,
   type ObservationFilters as ObservationFiltersState,
 } from '@/lib/sky';
@@ -21,17 +25,33 @@ type ViewMetadata = {
 };
 
 export default function Home() {
-  const [target, setTarget] = useState({ ...DEFAULT_TARGET, key: 0 });
+  const [target, setTarget] = useState({
+    ...DEFAULT_TARGET,
+    key: 0,
+  });
+
   const [loading, setLoading] = useState(0);
+  const [rgb, setRgb] = useState<RGBSettings>({
+    ...DEFAULT_RGB,
+  });
+
   const [inverted, setInverted] = useState(false);
-  const [filters, setFilters] = useState<ObservationFiltersState>(DEFAULT_FILTERS);
+
+  const [filters, setFilters] =
+    useState<ObservationFiltersState>(DEFAULT_FILTERS);
+
   const [metadata, setMetadata] = useState<ViewMetadata>({
     ...DEFAULT_TARGET,
     observationMjd: null,
   });
 
   const goTo = (ra: number, dec: number) => {
-    setTarget((previous) => ({ ra, dec, key: previous.key + 1 }));
+    setTarget((previous) => ({
+      ra,
+      dec,
+      key: previous.key + 1,
+    }));
+
     setMetadata({ ra, dec, observationMjd: null });
   };
 
@@ -45,6 +65,7 @@ export default function Home() {
         <SkyViewer
           target={target}
           filters={filters}
+          rgb={rgb}
           onLoadingChange={setLoading}
           onMetadataChange={setMetadata}
         />
@@ -52,7 +73,12 @@ export default function Home() {
 
       <GotoBox onGo={goTo} />
 
-      <ObservationFilters filters={filters} onApply={setFilters} />
+      <ObservationFilters
+        filters={filters}
+        onApply={setFilters}
+      />
+
+      <RGBControls onApply={setRgb} />
 
       <MetadataPanel
         ra={metadata.ra}
@@ -68,18 +94,22 @@ export default function Home() {
             className="flex items-center gap-2 rounded-xl border border-[#31578C]/70 bg-[#080F1F]/90 px-3 py-2 text-[10px] font-medium tracking-wide text-[#C5D5F2] shadow-lg backdrop-blur-xl"
           >
             <span className="h-2 w-2 animate-pulse rounded-full bg-[#FC3D21]" />
+
             <span>
               LOADING {loading} {loading === 1 ? 'TILE' : 'TILES'}
             </span>
           </div>
         )}
+
         <ModeToggle />
       </div>
 
       <DiscoveryTools
         inverted={inverted}
         onToggleInvert={() => setInverted((value) => !value)}
-        onJumpToExample={() => goTo(DEFAULT_TARGET.ra, DEFAULT_TARGET.dec)}
+        onJumpToExample={() =>
+          goTo(DEFAULT_TARGET.ra, DEFAULT_TARGET.dec)
+        }
         observationMjd={metadata.observationMjd}
       />
     </main>
