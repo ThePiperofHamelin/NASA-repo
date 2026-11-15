@@ -1,9 +1,7 @@
 flask
 numpy
 scipy
-matplotlib
 pillow
 astropy
 astroquery
-firefly_client
 certifi

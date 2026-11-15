@@ -19,10 +19,16 @@ python main.py
 Tiles are slow to load the first time. This loads them in advance:
 
 ```sh
-python prewarm.py --ra 304.69 --dec 42.44
+python main.py prewarm --ra 304.69 --dec 42.44
 ```
 
 Use `--start`/`--end` (MJD) and `--band` to pre-warm a filtered set of observations.
+
+## Mosaic Stitching
+
+```sh
+python main.py stitch <image1.fits> <image2.fits> ... -o mosaic.png
+```
 
 ## API
 
