@@ -883,16 +883,49 @@ def _band(url: str, cell: Cell, exposure_id: str, detector: int, target: WCS, sh
 	return np.nan_to_num(projected), footprint > 0.5
 
 
-def tile_path(cell: Cell, exposure_id: str, bands=None) -> str:
-	"""Path to a rendered tile, including the detector pair when one is chosen."""
-	detectors = _band_detectors(bands)
-	suffix = f"_D{detectors[0]}D{detectors[1]}" if detectors else ""
-	return cache_path("tiles", f"{exposure_id}_{cell.id}{suffix}.png")
+def tile_path(
+    cell: Cell,
+    exposure_id: str,
+    bands=None,
+    *,
+    r_weight=1.0,
+    g_weight=1.0,
+    b_weight=1.0,
+    brightness=1.0,
+) -> str:
+    detectors = _band_detectors(bands)
+    suffix = f"_D{detectors[0]}D{detectors[1]}" if detectors else ""
 
+    settings = [r_weight, g_weight, b_weight, brightness]
+    digest = hashlib.sha256(
+        json.dumps(settings).encode()
+    ).hexdigest()[:16]
 
-def render_tile(cell: Cell, exposure: dict, bands=None) -> str:
+    return cache_path(
+        "tiles",
+        f"{exposure_id}_{cell.id}{suffix}_rgb-v2_{digest}.png",
+    )
+
+def render_tile(
+    cell: Cell,
+    exposure: dict,
+    bands=None,
+    *,
+    r_weight=1.0,
+    g_weight=1.0,
+    b_weight=1.0,
+    brightness=1.0,
+) -> str:
 	"""Render a colour tile for an observation and save as PNG."""
-	path = tile_path(cell, exposure["id"], bands)
+	path = tile_path(
+    cell,
+    exposure["id"],
+    bands,
+    r_weight=r_weight,
+    g_weight=g_weight,
+    b_weight=b_weight,
+    brightness=brightness,
+	)
 	with key_lock(path):
 		if os.path.exists(path):
 			return path
@@ -911,7 +944,14 @@ def render_tile(cell: Cell, exposure: dict, bands=None) -> str:
 
 		valid = blue_ok & red_ok
 		green = (blue + red) * 0.5
-		rgb = make_lupton_rgb(red, green, blue, minimum=RGB_MIN, stretch=RGB_STRETCH, Q=RGB_Q)
+		rgb = make_lupton_rgb(
+    		red * r_weight * brightness,
+   			green * g_weight * brightness,
+    		blue * b_weight * brightness,
+    		minimum=RGB_MIN,
+    		stretch=RGB_STRETCH,
+    		Q=RGB_Q,
+		)
 
 		inside = get_cell_inside_mask(cell, target, shape)
 		alpha = (valid & inside).astype(np.uint8) * 255
@@ -1097,31 +1137,53 @@ def get_exposures(cell_id: str):
 
 @app.get('/api/cells/<cell_id>/tiles/<exposure_id>.png')
 def get_tile(cell_id: str, exposure_id: str):
-	cell = cell_or_404(cell_id)
-	if not re.fullmatch(r"[A-Za-z0-9_.+\-]+", exposure_id):
-		abort(404)
+    cell = cell_or_404(cell_id)
 
-	bands = list_arg('band')
-	try:
-		# Fast path: check if tile is already rendered on disk
-		cached_tile = tile_path(cell, exposure_id, bands)
-		if os.path.exists(cached_tile):
-			response = send_file(cached_tile, mimetype="image/png")
-			response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-			return response
+    if not re.fullmatch(r"[A-Za-z0-9_.+\-]+", exposure_id):
+        abort(404)
 
-		# Slow path: find exposure and render on demand
-		exposures = search(*cell.center, cell.id, bands=bands)
-		exposure = next((e for e in exposures if e["id"] == exposure_id), None)
-		if exposure is None:
-			abort(404)
-		rendered_tile = render_tile(cell, exposure, bands)
-	except ValueError as e:
-		return {"error": str(e)}, 400
+    bands = list_arg("band")
 
-	response = send_file(rendered_tile, mimetype="image/png")
-	response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-	return response
+    try:
+        # Read and validate the RGB controls from the request.
+        controls = {}
+
+        for name in ("r_weight", "g_weight", "b_weight", "brightness"):
+            value = _number(request.args.get(name, "1.0"), name)
+
+            if name == "brightness":
+                if not 0.2 <= value <= 3.0:
+                    raise ValueError("brightness must be between 0.2 and 3")
+            elif not 0.0 <= value <= 2.0:
+                raise ValueError(f"{name} must be between 0 and 2")
+
+            controls[name] = value
+
+        # Reuse a tile only if its RGB settings match.
+        path = tile_path(cell, exposure_id, bands, **controls)
+
+        if not os.path.exists(path):
+            exposures = search(*cell.center, cell.id, bands=bands)
+
+            exposure = next(
+                (e for e in exposures if e["id"] == exposure_id),
+                None,
+            )
+
+            if exposure is None:
+                abort(404)
+
+            path = render_tile(cell, exposure, bands, **controls)
+
+    except ValueError as e:
+        return {"error": str(e)}, 400
+
+    response = send_file(path, mimetype="image/png")
+
+    # Revalidate browser/CDN caches while this feature is being developed.
+    response.headers["Cache-Control"] = "no-cache"
+
+    return response
 
 
 @app.get('/api/getPic')
