@@ -35,8 +35,8 @@ The sky is divided into a grid of cells about 1° across.
 
 ### Filters
 
-Exposure and cutout searches are backed by TAP queries against
-`spherex.obscore`, so they accept optional filters:
+Exposure and cutout searches are backed by SIA2 queries against the IRSA SIA
+service, so they accept optional filters:
 
 - `start=<mjd>` and `end=<mjd>` select observations overlapping the requested
   Modified Julian Date range. Either bound may be omitted.

@@ -11,7 +11,9 @@ import urllib.error
 import urllib.request
 
 import certifi
+from astropy import units as u
 from astropy.io import fits
+from astropy.time import Time
 from astropy.utils.data import conf
 from astroquery.ipac.irsa import Irsa
 
@@ -21,6 +23,26 @@ COLLECTIONS = ("spherex_dr1", "spherex_qr3")
 CACHE_DIR = os.getenv("CACHE_DIR", os.path.join(os.path.dirname(__file__), ".cache"))
 MAX_DOWNLOADS = int(os.getenv("IRSA_DOWNLOADS", "3"))
 MAX_SEARCHES = int(os.getenv("IRSA_SEARCHES", "3"))
+
+# SIA2 searches a circle, so a point lookup uses a radius small enough that
+# only images covering the requested position can match.
+SEARCH_RADIUS = 1 * u.arcsec
+
+# SPHEREx bandpasses and the wavelengths they cover, in micrometres. SIA2 has
+# no bandpass-name parameter, so these let us narrow the search by wavelength
+# before filtering on the exact energy_bandpassname values locally.
+BANDPASS_WAVELENGTHS = {
+	"SPHEREx-D1": (0.75, 1.09),
+	"SPHEREx-D2": (1.10, 1.62),
+	"SPHEREx-D3": (1.63, 2.41),
+	"SPHEREx-D4": (2.42, 3.82),
+	"SPHEREx-D5": (3.83, 4.41),
+	"SPHEREx-D6": (4.42, 5.00),
+}
+
+# MJD bounds used when only one side of a time range is requested.
+MJD_MIN = 0.0
+MJD_MAX = 100000.0
 
 _ssl = ssl.create_default_context(cafile=certifi.where())
 _download_slots = threading.BoundedSemaphore(MAX_DOWNLOADS)
@@ -54,11 +76,11 @@ def _number(value, name: str) -> float:
 	return number
 
 
-def _sql_string(value, name: str) -> str:
+def _name(value, name: str) -> str:
 	value = str(value)
 	if not re.fullmatch(r"[A-Za-z0-9_.+\-]+", value):
 		raise ValueError(f"{name} contains invalid characters")
-	return f"'{value}'"
+	return value
 
 
 def _as_list(value):
@@ -77,58 +99,69 @@ def build_query(
 	end=None,
 	bands=None,
 	collections=None,
-	obs_id=None,
-) -> str:
-	"""Build the ADQL query used to find SPHEREx images.
+) -> dict:
+	"""Build the SIA2 parameters used to find SPHEREx images.
 
 	`start` and `end` are Modified Julian Dates. They select images whose
 	observation time overlaps the requested interval; either bound may be
 	omitted. `bands` and `collections` accept a single value or a sequence.
 	"""
-	ra = _number(ra, "ra")
-	dec = _number(dec, "dec")
-	clauses = [f"CONTAINS(POINT('ICRS', {ra}, {dec}), s_region) = 1"]
+	params = {"pos": (_number(ra, "ra"), _number(dec, "dec"), SEARCH_RADIUS)}
 
-	start = None if start is None else _number(start, "start")
-	end = None if end is None else _number(end, "end")
-	if start is not None and end is not None and start > end:
-		raise ValueError("start must not be after end")
-	if start is not None:
-		clauses.append(f"t_max >= {start}")
-	if end is not None:
-		clauses.append(f"t_min <= {end}")
+	if start is not None or end is not None:
+		start = None if start is None else _number(start, "start")
+		end = None if end is None else _number(end, "end")
+		if start is not None and end is not None and start > end:
+			raise ValueError("start must not be after end")
+		params["time"] = (
+			Time(MJD_MIN if start is None else start, format="mjd"),
+			Time(MJD_MAX if end is None else end, format="mjd"),
+		)
 
 	bands = _as_list(bands)
 	if bands:
-		clauses.append("energy_bandpassname IN (" + ", ".join(_sql_string(band, "band") for band in bands) + ")")
+		bands = [_name(band, "band") for band in bands]
+		# Restrict by wavelength only when every requested bandpass has a
+		# known range; otherwise the SIA filter would hide the other bands.
+		if all(band in BANDPASS_WAVELENGTHS for band in bands):
+			params["band"] = [
+				tuple(value * u.micrometer for value in BANDPASS_WAVELENGTHS[band])
+				for band in bands
+			]
 
 	collections = COLLECTIONS if collections is None else _as_list(collections)
 	if collections:
-		clauses.append("obs_collection IN (" + ", ".join(_sql_string(collection, "collection") for collection in collections) + ")")
+		params["collection"] = [_name(collection, "collection") for collection in collections]
 
-	if obs_id is not None:
-		clauses.append(f"obs_id = {_sql_string(obs_id, 'obs_id')}")
-
-	return f"""
-SELECT obs_id, energy_bandpassname, access_url, t_min, t_max, obs_collection
-FROM spherex.obscore
-WHERE {' AND '.join(clauses)}
-ORDER BY t_min
-""".strip()
+	return params
 
 
-def _query(sql: str, maxrec: int | None = None, attempts: int = 3):
+def _query(params: dict, *, bands=None, obs_id=None, maxrec: int | None = None, attempts: int = 3):
 	for attempt in range(attempts):
 		try:
 			with _search_slots:
-				kwargs = {"async_job": True}
-				if maxrec is not None:
-					kwargs["maxrec"] = maxrec
-				return Irsa.query_tap(sql, **kwargs)
+				rows = Irsa.query_sia(**params)
+			break
 		except Exception:
 			if attempt == attempts - 1:
 				raise
 			time.sleep(3 * (attempt + 1))
+
+	# SIA2 can only filter bands by wavelength and has no obs_id parameter,
+	# so apply the exact filters here to match the previous TAP semantics.
+	if bands:
+		wanted = set(bands)
+		rows = rows[[str(value) in wanted for value in rows["energy_bandpassname"]]]
+	if obs_id is not None:
+		obs_id = _name(obs_id, "obs_id")
+		rows = rows[[str(value) == obs_id for value in rows["obs_id"]]]
+
+	# TAP used ORDER BY t_min; keep the same ordering (and let callers rely on
+	# maxrec returning the earliest matching rows).
+	rows.sort("t_min")
+	if maxrec is not None:
+		rows = rows[:maxrec]
+	return rows
 
 
 def search_rows(
@@ -142,16 +175,20 @@ def search_rows(
 	obs_id=None,
 	maxrec: int | None = None,
 ):
-	query = build_query(
+	params = build_query(
 		ra,
 		dec,
 		start=start,
 		end=end,
 		bands=bands,
 		collections=collections,
-		obs_id=obs_id,
 	)
-	return _query(query, maxrec=maxrec)
+	return _query(
+		params,
+		bands=_as_list(bands),
+		obs_id=obs_id,
+		maxrec=maxrec,
+	)
 
 
 def _cache_name(key: str, filters: dict) -> str:
@@ -208,7 +245,7 @@ def search(
 ) -> list[dict]:
 	"""Find SPHEREx exposures covering a position.
 
-	Optional filters are forwarded to the TAP query. `start` and `end` are
+	Optional filters are forwarded to the SIA2 query. `start` and `end` are
 	MJD bounds, `bands` selects one or more `energy_bandpassname` values, and
 	`collections` selects one or more `obs_collection` values.
 	"""
