@@ -524,6 +524,43 @@ def _detector(bandpass: str) -> int:
 	return int(bandpass.rsplit("D", 1)[1])
 
 
+def _pair_bands(bands):
+	"""Expand requested bandpass names to the short/long detector pairs they belong to.
+
+	A colour tile always needs both a short- and a long-wavelength detector, so
+	selecting a single bandpass (for example SPHEREx-D2) implicitly selects its
+	partner (SPHEREx-D5) as well.
+	"""
+	bands = _as_list(bands)
+	if not bands:
+		return None
+	names: list[str] = []
+	for band in bands:
+		band = _name(band, "band")
+		if band not in BANDPASS_WAVELENGTHS:
+			raise ValueError(f"unknown band {band}")
+		detector = _detector(band)
+		short = detector if detector <= 3 else detector - 3
+		for wavelength_band in (f"SPHEREx-D{short}", f"SPHEREx-D{short + 3}"):
+			if wavelength_band not in names:
+				names.append(wavelength_band)
+	return names
+
+
+def _band_detectors(bands) -> tuple[int, int] | None:
+	names = _pair_bands(bands)
+	if not names:
+		return None
+	shorts = {
+		detector if detector <= 3 else detector - 3
+		for detector in (_detector(name) for name in names)
+	}
+	if len(shorts) != 1:
+		raise ValueError("band must select a single short/long detector pair")
+	short = shorts.pop()
+	return short, short + 3
+
+
 def _number(value, name: str) -> float:
 	try:
 		number = float(value)
@@ -691,10 +728,11 @@ def search(
 	obs_id=None,
 ) -> list[dict]:
 	"""Find SPHEREx exposures covering a position, caching results to disk."""
+	bands = _pair_bands(bands)
 	filters = {
 		"start": start,
 		"end": end,
-		"bands": _as_list(bands),
+		"bands": bands,
 		"collections": _as_list(collections),
 		"obs_id": obs_id,
 	}
@@ -845,13 +883,16 @@ def _band(url: str, cell: Cell, exposure_id: str, detector: int, target: WCS, sh
 	return np.nan_to_num(projected), footprint > 0.5
 
 
-def tile_path(cell: Cell, exposure_id: str) -> str:
-	return cache_path("tiles", f"{exposure_id}_{cell.id}.png")
+def tile_path(cell: Cell, exposure_id: str, bands=None) -> str:
+	"""Path to a rendered tile, including the detector pair when one is chosen."""
+	detectors = _band_detectors(bands)
+	suffix = f"_D{detectors[0]}D{detectors[1]}" if detectors else ""
+	return cache_path("tiles", f"{exposure_id}_{cell.id}{suffix}.png")
 
 
-def render_tile(cell: Cell, exposure: dict) -> str:
+def render_tile(cell: Cell, exposure: dict, bands=None) -> str:
 	"""Render a colour tile for an observation and save as PNG."""
-	path = tile_path(cell, exposure["id"])
+	path = tile_path(cell, exposure["id"], bands)
 	with key_lock(path):
 		if os.path.exists(path):
 			return path
@@ -859,7 +900,7 @@ def render_tile(cell: Cell, exposure: dict) -> str:
 		header = cell.wcs_header()
 		target = WCS(header)
 		shape = (header["NAXIS2"], header["NAXIS1"])
-		short_det, long_det = exposure["detectors"]
+		short_det, long_det = _band_detectors(bands) or exposure["detectors"]
 
 		# Concurrently fetch and reproject both detectors
 		with ThreadPoolExecutor(max_workers=2) as executor:
@@ -915,7 +956,7 @@ def prewarm_tiles(
 
 	start_time = time.time()
 	with ThreadPoolExecutor(max_workers=downloads_limit) as pool:
-		futures = {pool.submit(render_tile, cell, exp): (cell, exp["id"]) for cell, exp in jobs.values()}
+		futures = {pool.submit(render_tile, cell, exp, bands): (cell, exp["id"]) for cell, exp in jobs.values()}
 		for done, future in enumerate(as_completed(futures), 1):
 			cell, exposure_id = futures[future]
 			try:
@@ -1034,22 +1075,24 @@ def get_exposures(cell_id: str):
 	cell = cell_or_404(cell_id)
 	start = soft_cast(float, request.args.get('start'), None)
 	end = soft_cast(float, request.args.get('end'), None)
+	bands = list_arg('band')
 	try:
 		exposures = search(
 			*cell.center,
 			cell.id,
 			start=start,
 			end=end,
-			bands=list_arg('band'),
+			bands=bands,
 			collections=list_arg('collection'),
 			obs_id=request.args.get('obs_id') or None,
 		)
+		result = [
+			{"id": e["id"], "mjd": e["mjd"], "ready": os.path.exists(tile_path(cell, e["id"], bands))}
+			for e in exposures
+		]
 	except ValueError as e:
 		return {"error": str(e)}, 400
-	return {"exposures": [
-		{"id": e["id"], "mjd": e["mjd"], "ready": os.path.exists(tile_path(cell, e["id"]))}
-		for e in exposures
-	]}
+	return {"exposures": result}
 
 
 @app.get('/api/cells/<cell_id>/tiles/<exposure_id>.png')
@@ -1058,19 +1101,24 @@ def get_tile(cell_id: str, exposure_id: str):
 	if not re.fullmatch(r"[A-Za-z0-9_.+\-]+", exposure_id):
 		abort(404)
 
-	# Fast path: check if tile is already rendered on disk
-	cached_tile = tile_path(cell, exposure_id)
-	if os.path.exists(cached_tile):
-		response = send_file(cached_tile, mimetype="image/png")
-		response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-		return response
+	bands = list_arg('band')
+	try:
+		# Fast path: check if tile is already rendered on disk
+		cached_tile = tile_path(cell, exposure_id, bands)
+		if os.path.exists(cached_tile):
+			response = send_file(cached_tile, mimetype="image/png")
+			response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+			return response
 
-	# Slow path: find exposure and render on demand
-	exposures = search(*cell.center, cell.id)
-	exposure = next((e for e in exposures if e["id"] == exposure_id), None)
-	if exposure is None:
-		abort(404)
-	rendered_tile = render_tile(cell, exposure)
+		# Slow path: find exposure and render on demand
+		exposures = search(*cell.center, cell.id, bands=bands)
+		exposure = next((e for e in exposures if e["id"] == exposure_id), None)
+		if exposure is None:
+			abort(404)
+		rendered_tile = render_tile(cell, exposure, bands)
+	except ValueError as e:
+		return {"error": str(e)}, 400
+
 	response = send_file(rendered_tile, mimetype="image/png")
 	response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
 	return response

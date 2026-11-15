@@ -7,7 +7,12 @@ import { ModeToggle } from '@/components/mode-toggle';
 import { SkyViewer } from '@/components/sky-viewer';
 import { MetadataPanel } from '@/components/metadata-panel';
 import { DiscoveryTools } from '@/components/discovery-tools';
-import { DEFAULT_TARGET } from '@/lib/sky';
+import { ObservationFilters } from '@/components/observation-filters';
+import {
+  DEFAULT_FILTERS,
+  DEFAULT_TARGET,
+  type ObservationFilters as ObservationFiltersState,
+} from '@/lib/sky';
 
 type ViewMetadata = {
   ra: number;
@@ -19,6 +24,7 @@ export default function Home() {
   const [target, setTarget] = useState({ ...DEFAULT_TARGET, key: 0 });
   const [loading, setLoading] = useState(0);
   const [inverted, setInverted] = useState(false);
+  const [filters, setFilters] = useState<ObservationFiltersState>(DEFAULT_FILTERS);
   const [metadata, setMetadata] = useState<ViewMetadata>({
     ...DEFAULT_TARGET,
     observationMjd: null,
@@ -38,12 +44,15 @@ export default function Home() {
       >
         <SkyViewer
           target={target}
+          filters={filters}
           onLoadingChange={setLoading}
           onMetadataChange={setMetadata}
         />
       </div>
 
       <GotoBox onGo={goTo} />
+
+      <ObservationFilters filters={filters} onApply={setFilters} />
 
       <MetadataPanel
         ra={metadata.ra}

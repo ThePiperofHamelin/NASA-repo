@@ -55,6 +55,7 @@ NASA's **SPHEREx** mission surveys the entire sky across 102 near-infrared spect
 - **Observation Metadata Panel:** Real-time HUD displaying the current celestial position (RA/Dec), active viewer status, and the exact UTC observation timestamp computed from Modified Julian Date (MJD).
 - **Guided Discovery Tour:** A built-in 4-step interactive walkthrough explaining SPHEREx imagery, coordinate systems, contrast inspection, and multi-epoch temporal variation analysis.
 - **Image Inversion Filter:** Instant contrast inversion toggle for inspecting faint structures and high-contrast features without modifying raw data.
+- **Observation Filters:** Time-range (UTC) and bandpass selection controls that re-query exposures and re-render tiles for the chosen short/long detector pair.
 - **Dynamic Tile Queue & Footprints:** Displays dashed bounding footprints over loading cells and prioritizes downloading tiles closest to the center of view.
 - **Theme Support:** Dark and light mode switching via `next-themes`.
 
@@ -302,7 +303,7 @@ Lists all SPHEREx observations covering the center of the specified cell.
 | :--- | :--- | :--- |
 | `start` | `float` | Earliest observation date in MJD. |
 | `end` | `float` | Latest observation date in MJD. |
-| `band` | `string` | Bandpass filter (e.g., `SPHEREx-D1`). Can be repeated or comma-separated. |
+| `band` | `string` | Bandpass filter (e.g., `SPHEREx-D1`). Can be repeated or comma-separated. A single bandpass implicitly includes its short/long partner so colour tiles can be rendered. |
 | `collection` | `string` | Data collection (default: `spherex_dr1,spherex_qr3`). |
 | `obs_id` | `string` | Restrict to a single specific observation identifier. |
 
@@ -333,13 +334,19 @@ Retrieves or on-demand renders a false-colour composite tile (PNG) for an observ
 - `cell_id`: Grid cell ID (e.g., `226_131`).
 - `exposure_id`: Observation ID (e.g., `2026W24_2B_0317_1`).
 
+**Query Parameters:**
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| `band` | `string` | Bandpass (e.g., `SPHEREx-D1`). Repeat the parameter or separate values with commas to select a short/long detector pair. A single bandpass automatically includes its partner. |
+
 **Response:**
 - `image/png` binary stream.
 - HTTP header `Cache-Control: public, max-age=31536000, immutable` on cached assets.
 
-**Example Request:**
+**Example Requests:**
 ```bash
 curl -O "http://localhost:8000/api/cells/226_131/tiles/2026W24_2B_0317_1.png"
+curl -O "http://localhost:8000/api/cells/226_131/tiles/2026W24_2B_0317_1.png?band=SPHEREx-D2,SPHEREx-D5"
 ```
 
 ---

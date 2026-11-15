@@ -137,10 +137,10 @@ export function DiscoveryTools({
                 in sky coordinates and compared on the same scale.
               </p>
               <div className="rounded-lg border border-[#31578C] bg-[#152541] p-3 text-xs leading-5 text-[#C5D5F2]">
-                <strong className="text-white">Next integration:</strong> a real
-               two-epoch comparison with the team&apos;s time-selection feature.
-
-                No before/after result is simulated in this tour.
+                <strong className="text-white">Try the Image Filters panel:</strong>{' '}
+                choose a UTC time range and bandpass to re-query the observations
+                shown in the viewer. A side-by-side two-epoch comparison is still
+                a future integration.
               </div>
             </div>
           )}

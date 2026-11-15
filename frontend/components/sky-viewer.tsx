@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import {
   type Cell,
   type Exposure,
+  type ObservationFilters,
   DEFAULT_TARGET,
   MAX_FOV,
   fetchCells,
@@ -16,6 +17,7 @@ type AladinModule = typeof import('aladin-lite').default;
 
 type Props = {
   target: { ra: number; dec: number; key: number };
+  filters: ObservationFilters;
   onLoadingChange: (count: number) => void;
   onMetadataChange?: (metadata: {
     ra: number;
@@ -43,11 +45,13 @@ async function fetchBlob(url: string, signal: AbortSignal) {
 
 export function SkyViewer({
   target,
+  filters,
   onLoadingChange,
   onMetadataChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engine = useRef<ReturnType<typeof createEngine> | null>(null);
+  const filtersRef = useRef(filters);
   
 const callbacks = useRef({
   onLoadingChange,
@@ -62,12 +66,16 @@ useEffect(() => {
   };
 });
 
+useEffect(() => {
+  filtersRef.current = filters;
+}, [filters]);
+
   useEffect(() => {
     let disposed = false;
     import('aladin-lite').then(async ({ default: A }) => {
       await A.init;
       if (disposed || !containerRef.current) return;
-      engine.current = createEngine(A, containerRef.current, callbacks);
+      engine.current = createEngine(A, containerRef.current, callbacks, filtersRef.current);
     });
     return () => {
       disposed = true;
@@ -79,6 +87,10 @@ useEffect(() => {
   useEffect(() => {
     if (target.key > 0) engine.current?.goto(target.ra, target.dec);
   }, [target]);
+
+  useEffect(() => {
+    engine.current?.setFilters(filters);
+  }, [filters]);
 
   return (
     <div className="absolute inset-0 bg-black">
@@ -96,7 +108,8 @@ function createEngine(
       Props,
       'onLoadingChange' | 'onMetadataChange'
     >;
-  }
+  },
+  initialFilters: ObservationFilters,
 ) {
   const aladin: Aladin = A.aladin(container, {
     target: `${DEFAULT_TARGET.ra} ${DEFAULT_TARGET.dec}`,
@@ -126,6 +139,12 @@ function createEngine(
   const active = new Map<string, { exposureId: string; controller: AbortController }>();
   let viewAbort: AbortController | null = null;
   let viewTimer: ReturnType<typeof setTimeout> | undefined;
+  let filters = initialFilters;
+  let filtersVersion = 0;
+
+  const variant = () => filters.bands?.join(',') ?? 'auto';
+  const cacheKey = (cellId: string, exposureId: string) =>
+    `${cellId}/${exposureId}/${variant()}`;
 
   const publishMetadata = (includeExposure = true) => {
     const [ra, dec] = aladin.getRaDec();
@@ -180,7 +199,7 @@ function createEngine(
   };
 
   const show = (cell: Cell, exposure: Exposure, url: string) => {
-    const name = `${cell.id}|${exposure.id}`;
+    const name = `${cell.id}|${exposure.id}|${variant()}`;
     const previous = layers.get(cell.id);
     if (previous === name) return;
     layers.set(cell.id, name);
@@ -215,11 +234,16 @@ function createEngine(
 
   const fetchTile = async (cell: Cell, exposure: Exposure) => {
     const controller = new AbortController();
+    const version = filtersVersion;
     active.set(cell.id, { exposureId: exposure.id, controller });
     const key = `${cell.id}/${exposure.id}`;
     try {
-      const url = await fetchBlob(tileUrl(cell.id, exposure.id), controller.signal);
-      blobs.set(key, url);
+      const url = await fetchBlob(tileUrl(cell.id, exposure.id, filters), controller.signal);
+      if (version !== filtersVersion) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      blobs.set(cacheKey(cell.id, exposure.id), url);
       exposure.ready = true;
       if (shown.get(cell.id) === exposure.id) show(cell, exposure, url);
     } catch (err) {
@@ -236,6 +260,24 @@ function createEngine(
     active.delete(cellId);
   };
 
+  const resetTileState = () => {
+    for (const name of layers.values()) aladin.removeImageLayer(name);
+    layers.clear();
+    shown.clear();
+    queued.clear();
+    active.forEach(({ controller }) => controller.abort());
+    active.clear();
+    blobs.forEach((url) => URL.revokeObjectURL(url));
+    blobs.clear();
+    exposures.clear();
+    exposureRequests.clear();
+  };
+
+  const sameFilters = (a: ObservationFilters, b: ObservationFilters) =>
+    a.start === b.start &&
+    a.end === b.end &&
+    (a.bands?.join(',') ?? '') === (b.bands?.join(',') ?? '');
+
   const sync = () => {
     const visible = new Set(cells.map((c) => c.id));
     for (const cellId of new Set([...layers.keys(), ...queued.keys(), ...active.keys()])) {
@@ -251,7 +293,7 @@ function createEngine(
       if (!choice || shown.get(cell.id) === choice.id) continue;
       shown.set(cell.id, choice.id);
       cancel(cell.id);
-      const blob = blobs.get(`${cell.id}/${choice.id}`);
+      const blob = blobs.get(cacheKey(cell.id, choice.id));
       if (blob) show(cell, choice, blob);
       else queued.set(cell.id, { cell, exposure: choice });
     }
@@ -260,14 +302,20 @@ function createEngine(
 
   const requestExposures = (cell: Cell) => {
     if (exposures.has(cell.id) || exposureRequests.has(cell.id)) return;
-    const request = fetchExposures(cell.id)
+    const version = filtersVersion;
+    const request = fetchExposures(cell.id, filters)
       .then((list) => {
+        if (version !== filtersVersion) return;
         exposures.set(cell.id, list);
         publishMetadata();
         sync();
       })
       .catch((err) => console.warn(`exposures ${cell.id} failed`, err))
-      .finally(() => exposureRequests.delete(cell.id));
+      .finally(() => {
+        if (exposureRequests.get(cell.id) === request) {
+          exposureRequests.delete(cell.id);
+        }
+      });
     exposureRequests.set(cell.id, request);
   };
 
@@ -302,6 +350,13 @@ function createEngine(
     goto(ra: number, dec: number) {
       aladin.gotoRaDec(ra, dec);
       scheduleView();
+    },
+    setFilters(next: ObservationFilters) {
+      if (sameFilters(filters, next)) return;
+      filters = next;
+      filtersVersion += 1;
+      resetTileState();
+      refreshView();
     },
     dispose() {
       clearTimeout(viewTimer);
